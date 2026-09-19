@@ -4,8 +4,16 @@ from datetime import datetime, timedelta, timezone
 
 from app.domain import Bar
 from app.research.backtest import fold_is_causal, walk_forward_folds
+from app.research.dataset import select_by_stride
+from app.research.experiments import DIRECTIONAL_UP_3PCT_12H_V1, get_experiment
 from app.research.features import extract_features, feature_names
-from app.research.labels import label_forward
+from app.research.labels import CLEAN_DRAWDOWN_FLOOR, label_forward, labels_from_outcomes
+from app.research.model import (
+    STATUS_INSUFFICIENT_ATR,
+    _metrics,
+    design_matrix,
+    fit_experiment_walk_forward,
+)
 from app.research.spec import LOOKBACK_BARS, embargo
 
 
@@ -31,6 +39,15 @@ def make_bars(n: int, *, start: datetime | None = None, drift: float = 0.0, seed
         )
         price = close_p
     return bars
+
+
+class _FakeSample:
+    def __init__(self, symbol: str, ts: datetime, features: dict, **labels):
+        self.symbol = symbol
+        self.ts = ts
+        self.features = features
+        for key, value in labels.items():
+            setattr(self, key, value)
 
 
 class ResearchFoundationTests(unittest.TestCase):
@@ -107,6 +124,143 @@ class ResearchFoundationTests(unittest.TestCase):
         gap = embargo()
         for train_idx, test_idx in folds:
             self.assertTrue(fold_is_causal(ts, train_idx, test_idx, gap))
+
+    def test_max_upside_and_large_up_move(self):
+        entry = 100.0
+        future = make_bars(12, seed=100.0)
+        # Force a +5% high in the window without requiring final close > +3%.
+        spiked = list(future)
+        spiked[3] = spiked[3].model_copy(update={"high": entry * 1.05, "close": entry * 0.99})
+        spiked[-1] = spiked[-1].model_copy(update={"close": entry * 0.98, "high": entry * 0.99})
+        labels = label_forward(spiked, entry, 12, 0.03)
+        self.assertIsNotNone(labels)
+        self.assertAlmostEqual(labels["max_upside"], 0.05, places=6)
+        self.assertTrue(labels["large_up_move"])
+        self.assertLess(labels["fwd_return"], 0.03)
+        self.assertEqual(len(spiked), 12)
+
+    def test_clean_up_move_requires_limited_drawdown(self):
+        entry = 100.0
+        future = make_bars(12, seed=100.0)
+        clean = list(future)
+        clean[2] = clean[2].model_copy(update={"high": entry * 1.04, "low": entry * 0.99})
+        labels_clean = label_forward(clean, entry, 12, 0.03)
+        self.assertTrue(labels_clean["large_up_move"])
+        self.assertTrue(labels_clean["clean_up_move"])
+
+        dirty = list(future)
+        dirty[1] = dirty[1].model_copy(update={"low": entry * 0.97})  # -3% < -1.5%
+        dirty[2] = dirty[2].model_copy(update={"high": entry * 1.04})
+        labels_dirty = label_forward(dirty, entry, 12, 0.03)
+        self.assertTrue(labels_dirty["large_up_move"])
+        self.assertFalse(labels_dirty["clean_up_move"])
+        self.assertLessEqual(labels_dirty["max_drawdown"], CLEAN_DRAWDOWN_FLOOR)
+
+    def test_significant_move_preserved_alongside_directional(self):
+        entry = 100.0
+        # Pure downside path: drawdown hits -5%, highs never reach +3%.
+        future = [
+            Bar(
+                ts=datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(hours=i),
+                open=entry,
+                high=entry * 1.01,
+                low=entry * (0.95 if i == 4 else 0.99),
+                close=entry * 0.98,
+                volume=1000,
+                closed=True,
+            )
+            for i in range(12)
+        ]
+        labels = label_forward(future, entry, 12, 0.03)
+        self.assertTrue(labels["significant_move"])
+        self.assertFalse(labels["large_up_move"])
+        self.assertFalse(labels["clean_up_move"])
+
+    def test_labels_from_outcomes_roundtrip(self):
+        derived = labels_from_outcomes(0.01, 0.04, -0.01, 0.03)
+        self.assertTrue(derived["large_up_move"])
+        self.assertTrue(derived["clean_up_move"])
+        self.assertTrue(derived["significant_move"])
+
+    def test_twelve_bar_stride_selection(self):
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        rows = [
+            _FakeSample("BTCUSDT", start + timedelta(hours=6 * i), {}, large_up_move=False)
+            for i in range(10)
+        ]
+        thinned = select_by_stride(rows, 12, base_stride=6)
+        self.assertEqual(len(thinned), 5)
+        gaps = [
+            (thinned[i + 1].ts - thinned[i].ts).total_seconds() / 3600 for i in range(len(thinned) - 1)
+        ]
+        self.assertTrue(all(g == 12 for g in gaps))
+
+    def test_atr_only_feature_selection(self):
+        exp = DIRECTIONAL_UP_3PCT_12H_V1
+        self.assertEqual(list(exp.atr_feature_names), ["atr_pct"])
+        self.assertIn("atr_pct", feature_names())
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        rows = [
+            _FakeSample(
+                "ETHUSDT",
+                start + timedelta(hours=i),
+                {"atr_pct": 1.0 + 0.01 * i, "rsi": 50.0},
+                large_up_move=(i % 3 == 0),
+            )
+            for i in range(30)
+        ]
+        x, y = design_matrix(rows, list(exp.atr_feature_names), target_name="large_up_move")
+        self.assertEqual(x.shape, (30, 1))
+        self.assertEqual(set(y.tolist()), {0, 1})
+
+    def test_experiment_lineage_contract(self):
+        exp = get_experiment("directional_up_3pct_12h_v1")
+        lineage = exp.lineage()
+        self.assertEqual(lineage["experiment_id"], "directional_up_3pct_12h_v1")
+        self.assertEqual(lineage["target_name"], "large_up_move")
+        self.assertEqual(lineage["primary_stride_bars"], 12)
+        self.assertEqual(lineage["sensitivity_stride_bars"], 6)
+        self.assertEqual(lineage["horizon_hours"], 12)
+        self.assertEqual(lineage["timeframe"], "1h")
+
+    def test_top_quintile_precision_in_metrics(self):
+        y = __import__("numpy").array([0, 0, 0, 0, 1, 1, 1, 1, 0, 1] * 3)
+        p = __import__("numpy").linspace(0.1, 0.9, len(y))
+        stats = _metrics(y, p)
+        self.assertIsNotNone(stats["top_quintile_precision"])
+        self.assertIsNotNone(stats["top_quintile_positive_count"])
+        self.assertEqual(stats["top_quintile_n"], max(1, len(y) // 5))
+
+    def test_experiment_fit_records_atr_comparison(self):
+        # Synthetic rows: label correlated with atr_pct only.
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        rows = []
+        names = feature_names()
+        for i in range(800):
+            atr = 0.5 + (i % 50) / 10.0
+            feats = {n: 0.0 for n in names}
+            feats["atr_pct"] = atr
+            rows.append(
+                _FakeSample(
+                    "BTCUSDT",
+                    start + timedelta(hours=i),
+                    feats,
+                    large_up_move=atr > 2.5,
+                    clean_up_move=atr > 3.0,
+                    significant_move=atr > 2.0,
+                )
+            )
+        result = fit_experiment_walk_forward(rows, DIRECTIONAL_UP_3PCT_12H_V1)
+        self.assertIn("comparison", result)
+        self.assertIn("atr_only", result["comparison"])
+        self.assertEqual(result["experiment_id"], "directional_up_3pct_12h_v1")
+        self.assertEqual(result["target_name"], "large_up_move")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {"rejected", STATUS_INSUFFICIENT_ATR, "experiment_pass"},
+        )
+        self.assertEqual(result["metrics"]["lineage"]["primary_stride_bars"], 12)
 
 
 if __name__ == "__main__":

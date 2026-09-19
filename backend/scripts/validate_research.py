@@ -11,8 +11,9 @@ import asyncio
 import json
 import logging
 import os
-from collections import Counter
-from datetime import timedelta
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -47,6 +48,26 @@ from app.research.spec import LOOKBACK_BARS, embargo, horizon_bars, horizon_hour
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("validate_research")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+REPORT_JSON = REPO_ROOT / "docs" / "research-validation-report.json"
+
+
+def run_research_tests() -> dict:
+    backend = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, "-m", "unittest", "tests.test_research", "-v"],
+        cwd=backend,
+        env={**os.environ, "PYTHONPATH": str(backend)},
+        capture_output=True,
+        text=True,
+    )
+    return {
+        "ok": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
 
 
 async def ensure_assets(provider) -> dict:
@@ -152,6 +173,7 @@ async def audit_leakage(rows: list[ResearchSample], bars_by_symbol: dict) -> dic
 
 
 async def main() -> None:
+    errors: list[str] = []
     settings = get_settings()
     log.info(
         "validate start db=%s provider=%s backfill_days=%s universe=%s",
@@ -160,6 +182,7 @@ async def main() -> None:
         settings.research_backfill_days,
         settings.universe_size,
     )
+    test_results = run_research_tests()
     await init_db()
     provider = create_provider()
     await provider.start()
@@ -219,6 +242,15 @@ async def main() -> None:
             overlap_ratio = max(0.0, 1.0 - (stride / horizon)) if horizon else None
 
             report = {
+                "run_metadata": {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "market_data_provider": settings.market_data_provider,
+                    "database_url": settings.database_url,
+                    "research_backfill_days": settings.research_backfill_days,
+                    "universe_size": settings.universe_size,
+                    "errors": errors,
+                },
+                "test_results": test_results,
                 "dataset": {
                     "symbols_count": len(symbols),
                     "symbols": symbols,
@@ -294,10 +326,14 @@ async def main() -> None:
                 },
             }
 
-            out = Path("/tmp/yami-research-validation-report.json")
-            out.write_text(json.dumps(report, indent=2, default=str))
+            REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
+            REPORT_JSON.write_text(json.dumps(report, indent=2, default=str))
             print(json.dumps(report, indent=2, default=str))
-            log.info("wrote %s", out)
+            log.info("wrote %s", REPORT_JSON)
+    except Exception as exc:
+        errors.append(str(exc))
+        log.exception("validation failed")
+        raise
     finally:
         await provider.close()
 

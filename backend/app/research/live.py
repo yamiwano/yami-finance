@@ -98,6 +98,8 @@ async def resolve_pending(db: AsyncSession, asset_ids: dict[str, UUID]) -> int:
             row.max_upside = float(labels["max_upside"])
             row.max_drawdown = float(labels["max_drawdown"])
             row.significant_move = bool(labels["significant_move"])
+            row.large_up_move = bool(labels["large_up_move"])
+            row.clean_up_move = bool(labels["clean_up_move"])
             row.resolved_at = utcnow()
             resolved += 1
     if resolved:

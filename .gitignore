@@ -27,6 +27,7 @@ dist/
 # Data
 postgres-data/
 redis-data/
+backend/data/*.db
 *.log
 *.db
 radar.db
