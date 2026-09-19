@@ -103,10 +103,30 @@ RELATIVE_UPSIDE_RANK_12H_V1 = ExperimentSpec(
     ),
 )
 
+# Volatility-adjusted upside: information beyond current ATR?
+VOLATILITY_ADJUSTED_UPSIDE_V1 = ExperimentSpec(
+    experiment_id="volatility_adjusted_upside_v1",
+    target_name="vol_adj_residual",
+    secondary_target="future_upside_atr_multiple",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Primary target = cross-sectional OLS residual of log1p(future_max_upside) on "
+        "log(atr_frac); secondary = upside/ATR multiple. Ablation without atr_pct."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
     RELATIVE_UPSIDE_RANK_12H_V1.experiment_id: RELATIVE_UPSIDE_RANK_12H_V1,
+    VOLATILITY_ADJUSTED_UPSIDE_V1.experiment_id: VOLATILITY_ADJUSTED_UPSIDE_V1,
 }
 
 

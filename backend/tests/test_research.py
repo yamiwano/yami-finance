@@ -410,5 +410,152 @@ class RelativeUpsideRankingTests(unittest.TestCase):
         self.assertIn("spearman", result["metrics"]["comparison_table"])
 
 
+class VolatilityAdjustedUpsideTests(unittest.TestCase):
+    def _rows_at(self, ts: datetime, n: int = 12, *, upside_fn=None, atr_fn=None, ret_fn=None, extra_fn=None):
+        names = feature_names()
+        rows = []
+        for i in range(n):
+            feats = {name: 0.0 for name in names}
+            atr = 1.0 + 0.15 * i if atr_fn is None else atr_fn(i)
+            ret = 0.01 * i if ret_fn is None else ret_fn(i)
+            upside = 0.01 * i if upside_fn is None else upside_fn(i)
+            feats["atr_pct"] = atr
+            feats["ret_24"] = ret
+            if extra_fn:
+                feats.update(extra_fn(i))
+            rows.append(
+                _FakeSample(
+                    f"S{i}",
+                    ts,
+                    feats,
+                    max_upside=upside,
+                    max_drawdown=-0.01,
+                    fwd_return=upside / 2,
+                )
+            )
+        return rows
+
+    def test_atr_normalized_target(self):
+        from app.research.vol_adjusted import atr_normalized_upside
+
+        self.assertAlmostEqual(atr_normalized_upside(0.05, 0.025), 2.0)
+        self.assertGreater(atr_normalized_upside(0.05, 0.0), 0)
+
+    def test_vol_residual_ranking_direction(self):
+        from app.research.vol_adjusted import annotate_vol_adjusted_targets, cross_section_vol_residuals
+        import numpy as np
+
+        # Same ATR, different upside → higher upside gets higher residual.
+        ups = [0.01, 0.05, 0.02]
+        atrs = [0.02, 0.02, 0.02]
+        resid, meta = cross_section_vol_residuals(ups, atrs)
+        self.assertTrue(np.isfinite(meta["alpha"]))
+        self.assertGreater(resid[1], resid[0])
+        self.assertGreater(resid[1], resid[2])
+
+        ts = datetime(2024, 5, 1, tzinfo=timezone.utc)
+        rows = self._rows_at(
+            ts,
+            n=12,
+            upside_fn=lambda i: 0.01 + 0.01 * i,
+            atr_fn=lambda i: 2.0,  # constant ATR% → residual tracks upside
+        )
+        kept, stats = annotate_vol_adjusted_targets(rows, min_cross_section=10)
+        self.assertEqual(stats["timestamps_used"], 1)
+        best = max(kept, key=lambda r: r.vol_adj_residual)
+        self.assertEqual(best.symbol, "S11")
+        self.assertAlmostEqual(best.vol_adj_rank_percentile, 1.0)
+
+    def test_min_cross_section_excludes_small_buckets(self):
+        from app.research.vol_adjusted import annotate_vol_adjusted_targets
+
+        start = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        rows = self._rows_at(start, n=12) + self._rows_at(start + timedelta(hours=12), n=5)
+        kept, stats = annotate_vol_adjusted_targets(rows, min_cross_section=10)
+        self.assertEqual(stats["timestamps_excluded_below_min"], 1)
+        self.assertEqual(len(kept), 12)
+
+    def test_vol_buckets_use_current_atr_only(self):
+        from app.research.vol_adjusted import vol_bucket_label
+
+        self.assertEqual(vol_bucket_label(1.0, 2.0, 4.0), "low")
+        self.assertEqual(vol_bucket_label(3.0, 2.0, 4.0), "medium")
+        self.assertEqual(vol_bucket_label(5.0, 2.0, 4.0), "high")
+
+    def test_matched_volatility_methodology(self):
+        from app.research.vol_adjusted import annotate_vol_adjusted_targets, matched_volatility_analysis
+        import numpy as np
+
+        ts = datetime(2024, 7, 1, tzinfo=timezone.utc)
+        # Pair structure: even i high residual via upside; odd peers similar ATR.
+        rows = self._rows_at(
+            ts,
+            n=12,
+            atr_fn=lambda i: 2.0 + 0.01 * (i // 2),
+            upside_fn=lambda i: 0.08 if i % 2 == 0 else 0.01,
+            ret_fn=lambda i: 0.02 if i % 2 == 0 else -0.02,
+        )
+        kept, _ = annotate_vol_adjusted_targets(rows, min_cross_section=10)
+        # Score = residual so top picks are high-upside evens
+        scores = np.array([r.vol_adj_residual for r in kept], dtype=float)
+        out = matched_volatility_analysis(kept, scores, atr_tol_frac=0.5)
+        self.assertGreaterEqual(out["n_matched"], 1)
+        self.assertIsNotNone(out["mean_difference"])
+
+    def test_top_k_vol_adj_metrics(self):
+        from app.research.vol_adjusted import annotate_vol_adjusted_targets, evaluate_timestamp_scores
+        import numpy as np
+
+        ts = datetime(2024, 8, 1, tzinfo=timezone.utc)
+        rows = self._rows_at(ts, n=12, upside_fn=lambda i: 0.01 * i, atr_fn=lambda i: 2.0)
+        kept, _ = annotate_vol_adjusted_targets(rows, min_cross_section=10)
+        scores = np.array([r.vol_adj_residual for r in kept], dtype=float)
+        metrics = evaluate_timestamp_scores(kept, scores)
+        self.assertGreater(metrics["spearman"], 0.99)
+        self.assertIsNotNone(metrics["top_5"]["mean_vol_adj"])
+        self.assertIsNotNone(metrics["top_5"]["hit_3pct"])
+
+    def test_fit_includes_ablation_and_never_promotes(self):
+        from app.research.experiments import VOLATILITY_ADJUSTED_UPSIDE_V1
+        from app.research.vol_adjusted import fit_vol_adjusted_walk_forward
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for t in range(400):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(12):
+                feats = {n: 0.0 for n in names}
+                atr = 1.5 + 0.2 * i
+                # Residual-like signal in rsi independent of atr
+                residual_signal = 0.02 * ((i + t) % 5)
+                feats["atr_pct"] = atr
+                feats["ret_24"] = 0.01 * i
+                feats["rsi"] = 40.0 + 10.0 * residual_signal * 50
+                upside = 0.004 * atr + residual_signal
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=max(0.001, upside),
+                        max_drawdown=-0.01,
+                        fwd_return=upside * 0.4,
+                    )
+                )
+        result = fit_vol_adjusted_walk_forward(rows, VOLATILITY_ADJUSTED_UPSIDE_V1, leakage_ok=True)
+        self.assertEqual(result["experiment_id"], "volatility_adjusted_upside_v1")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {"rejected", "weak_volatility_adjusted_signal", "promising_volatility_adjusted_signal"},
+        )
+        self.assertIn("full_without_atr", result["metrics"])
+        self.assertIn("volatility_buckets", result["metrics"])
+        self.assertIn("matched_volatility", result["metrics"])
+        table = result["metrics"]["comparison_table"]
+        self.assertIn("full_without_atr", table["spearman"])
+
+
 if __name__ == "__main__":
     unittest.main()
