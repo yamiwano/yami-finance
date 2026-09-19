@@ -44,6 +44,16 @@ def design_matrix(rows: list[ResearchSample], names: list[str]) -> tuple[np.ndar
     return x, y
 
 
+def _positive_proba(clf: HistGradientBoostingClassifier, x: np.ndarray) -> np.ndarray:
+    proba = clf.predict_proba(x)
+    classes = list(clf.classes_)
+    if 1 in classes:
+        return proba[:, classes.index(1)]
+    if 0 in classes and len(classes) == 1:
+        return np.zeros(len(x), dtype=float)
+    return proba[:, -1]
+
+
 def _metrics(y_true: np.ndarray, p: np.ndarray) -> dict[str, float | None]:
     base = float(np.mean(y_true)) if len(y_true) else 0.0
     brier = float(brier_score_loss(y_true, p)) if len(y_true) else None
@@ -89,19 +99,30 @@ def fit_walk_forward(rows: list[ResearchSample]) -> dict[str, Any]:
     folds = walk_forward_folds(timestamps)
     fold_metrics: list[dict[str, Any]] = []
     for train_idx, test_idx in folds:
+        y_train = y[train_idx]
+        if len(set(y_train.tolist())) < 2:
+            continue
         clf = _new_classifier()
-        clf.fit(x[train_idx], y[train_idx])
-        p = clf.predict_proba(x[test_idx])[:, 1]
+        clf.fit(x[train_idx], y_train)
+        p = _positive_proba(clf, x[test_idx])
         stats = _metrics(y[test_idx], p)
         stats["train_n"] = len(train_idx)
+        stats["train_start"] = timestamps[train_idx[0]].isoformat()
+        stats["train_end"] = timestamps[train_idx[-1]].isoformat()
+        stats["test_start"] = timestamps[test_idx[0]].isoformat()
+        stats["test_end"] = timestamps[test_idx[-1]].isoformat()
         fold_metrics.append(stats)
 
     aucs = [m["auc"] for m in fold_metrics if m.get("auc") is not None]
     briers = [m["brier"] for m in fold_metrics if m.get("brier") is not None]
     baselines = [m["baseline_brier"] for m in fold_metrics if m.get("baseline_brier") is not None]
+    lifts = [m["top_quintile_lift"] for m in fold_metrics if m.get("top_quintile_lift") is not None]
     mean_auc = float(np.mean(aucs)) if aucs else None
     mean_brier = float(np.mean(briers)) if briers else None
     mean_baseline = float(np.mean(baselines)) if baselines else None
+    mean_lift = float(np.mean(lifts)) if lifts else None
+    std_auc = float(np.std(aucs, ddof=1)) if len(aucs) > 1 else (0.0 if aucs else None)
+    std_brier = float(np.std(briers, ddof=1)) if len(briers) > 1 else (0.0 if briers else None)
     promote = bool(
         enough_folds(len(fold_metrics))
         and mean_auc is not None
@@ -121,19 +142,28 @@ def fit_walk_forward(rows: list[ResearchSample]) -> dict[str, Any]:
         )
 
     final = _new_classifier()
-    final.fit(x, y)
-    blob = BytesIO()
-    joblib.dump({"model": final, "feature_names": names}, blob)
+    if len(set(y.tolist())) < 2:
+        note = "Labeled set has only one class; model was not promoted."
+        promote = False
+        blob = b""
+    else:
+        final.fit(x, y)
+        blob_buf = BytesIO()
+        joblib.dump({"model": final, "feature_names": names}, blob_buf)
+        blob = blob_buf.getvalue()
     return {
         "promote": promote,
         "feature_names": names,
-        "blob": blob.getvalue(),
+        "blob": blob,
         "metrics": {
             "folds": fold_metrics,
             "fold_count": len(fold_metrics),
             "mean_auc": mean_auc,
+            "std_auc": std_auc,
             "mean_brier": mean_brier,
+            "std_brier": std_brier,
             "mean_baseline_brier": mean_baseline,
+            "mean_top_quintile_lift": mean_lift,
             "train_samples": int(len(ordered)),
             "positive_rate": float(np.mean(y)) if len(y) else None,
         },
@@ -144,11 +174,7 @@ def fit_walk_forward(rows: list[ResearchSample]) -> dict[str, Any]:
 def predict_proba(payload: dict[str, Any], features: dict) -> float:
     names: list[str] = payload["feature_names"]
     x = np.array([[_to_nan(features.get(name)) for name in names]], dtype=float)
-    p = payload["model"].predict_proba(x)[0]
-    classes = list(payload["model"].classes_)
-    if 1 in classes:
-        return float(p[classes.index(1)])
-    return float(p[-1])
+    return float(_positive_proba(payload["model"], x)[0])
 
 
 def load_payload(blob: bytes) -> dict[str, Any]:
