@@ -122,11 +122,31 @@ VOLATILITY_ADJUSTED_UPSIDE_V1 = ExperimentSpec(
     ),
 )
 
+# Risk-adjusted opportunity: upside quality relative to downside.
+RISK_ADJUSTED_OPPORTUNITY_V1 = ExperimentSpec(
+    experiment_id="risk_adjusted_opportunity_v1",
+    target_name="log_risk_adjusted_opportunity",
+    secondary_target="risk_adjusted_opportunity",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Train on log1p(upside/max(|drawdown|,eps)); evaluate opportunity ranking, "
+        "barriers, downside control, and ATR ablation."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
     RELATIVE_UPSIDE_RANK_12H_V1.experiment_id: RELATIVE_UPSIDE_RANK_12H_V1,
     VOLATILITY_ADJUSTED_UPSIDE_V1.experiment_id: VOLATILITY_ADJUSTED_UPSIDE_V1,
+    RISK_ADJUSTED_OPPORTUNITY_V1.experiment_id: RISK_ADJUSTED_OPPORTUNITY_V1,
 }
 
 

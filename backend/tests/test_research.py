@@ -557,5 +557,152 @@ class VolatilityAdjustedUpsideTests(unittest.TestCase):
         self.assertIn("full_without_atr", table["spearman"])
 
 
+class RiskAdjustedOpportunityTests(unittest.TestCase):
+    def test_opportunity_and_log_and_tiny_drawdown(self):
+        from app.research.opportunity import (
+            OPPORTUNITY_EPS,
+            log_risk_adjusted_opportunity,
+            risk_adjusted_opportunity,
+        )
+
+        self.assertAlmostEqual(risk_adjusted_opportunity(0.06, -0.02), 3.0)
+        self.assertAlmostEqual(
+            risk_adjusted_opportunity(0.05, 0.0),
+            0.05 / OPPORTUNITY_EPS,
+        )
+        self.assertAlmostEqual(
+            log_risk_adjusted_opportunity(0.06, -0.02),
+            __import__("math").log1p(3.0),
+        )
+
+    def test_barrier_first_touch_and_ambiguous(self):
+        from app.research.opportunity import first_touch_barrier
+
+        entry = 100.0
+        # Up first on bar 0
+        bars_up = [
+            Bar(ts=datetime(2024, 1, 1, tzinfo=timezone.utc), open=100, high=104, low=99.5, close=103, volume=1, closed=True),
+            Bar(ts=datetime(2024, 1, 1, 1, tzinfo=timezone.utc), open=103, high=103, low=97, close=98, volume=1, closed=True),
+        ]
+        self.assertEqual(first_touch_barrier(bars_up, entry, 0.03, 0.02), "up_first")
+        # Down first
+        bars_dn = [
+            Bar(ts=datetime(2024, 1, 1, tzinfo=timezone.utc), open=100, high=100.5, low=97.5, close=98, volume=1, closed=True),
+        ]
+        self.assertEqual(first_touch_barrier(bars_dn, entry, 0.03, 0.02), "down_first")
+        # Ambiguous same candle
+        bars_amb = [
+            Bar(ts=datetime(2024, 1, 1, tzinfo=timezone.utc), open=100, high=104, low=97, close=101, volume=1, closed=True),
+        ]
+        self.assertEqual(first_touch_barrier(bars_amb, entry, 0.03, 0.02), "ambiguous")
+        # Neither
+        bars_none = [
+            Bar(ts=datetime(2024, 1, 1, tzinfo=timezone.utc), open=100, high=101, low=99, close=100.5, volume=1, closed=True),
+        ]
+        self.assertEqual(first_touch_barrier(bars_none, entry, 0.03, 0.02), "neither")
+
+    def test_annotate_opportunity_ranking_direction(self):
+        from app.research.opportunity import annotate_opportunity_targets
+
+        ts = datetime(2024, 9, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for i in range(12):
+            feats = {n: 0.0 for n in names}
+            feats["atr_pct"] = 2.0
+            feats["ret_24"] = 0.01 * i
+            # Higher i => better opportunity (more upside, same drawdown)
+            rows.append(
+                _FakeSample(
+                    f"S{i}",
+                    ts,
+                    feats,
+                    max_upside=0.02 + 0.01 * i,
+                    max_drawdown=-0.02,
+                    fwd_return=0.01 * i,
+                    up3_before_down2="up_first" if i > 5 else "down_first",
+                    up5_before_down3="neither",
+                    up10_before_down5="neither",
+                )
+            )
+        kept, stats = annotate_opportunity_targets(rows, min_cross_section=10)
+        self.assertEqual(stats["timestamps_used"], 1)
+        best = max(kept, key=lambda r: r.risk_adjusted_opportunity)
+        self.assertEqual(best.symbol, "S11")
+        self.assertAlmostEqual(best.opportunity_rank_percentile, 1.0)
+
+    def test_top_k_and_downside_metrics(self):
+        from app.research.opportunity import annotate_opportunity_targets, evaluate_timestamp_scores
+        import numpy as np
+
+        ts = datetime(2024, 9, 2, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for i in range(12):
+            feats = {n: 0.0 for n in names}
+            feats["atr_pct"] = 1.5 + 0.1 * i
+            rows.append(
+                _FakeSample(
+                    f"S{i}",
+                    ts,
+                    feats,
+                    max_upside=0.01 * (i + 1),
+                    max_drawdown=-0.01,
+                    fwd_return=0.005 * i,
+                    up3_before_down2="up_first",
+                    up5_before_down3="neither",
+                    up10_before_down5="neither",
+                )
+            )
+        kept, _ = annotate_opportunity_targets(rows, min_cross_section=10)
+        scores = np.array([r.risk_adjusted_opportunity for r in kept], dtype=float)
+        metrics = evaluate_timestamp_scores(kept, scores)
+        self.assertGreater(metrics["spearman_opportunity"], 0.99)
+        self.assertIsNotNone(metrics["top_5"]["mean_drawdown"])
+        self.assertIsNotNone(metrics["top_5"]["up3_before_down2"])
+
+    def test_fit_never_promotes_and_has_ablation(self):
+        from app.research.experiments import RISK_ADJUSTED_OPPORTUNITY_V1
+        from app.research.opportunity import fit_opportunity_walk_forward
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for t in range(400):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(12):
+                feats = {n: 0.0 for n in names}
+                atr = 1.5 + 0.15 * i
+                signal = 0.01 * ((i + t) % 4)
+                feats["atr_pct"] = atr
+                feats["ret_24"] = 0.01 * i
+                feats["rsi"] = 50 + 20 * signal
+                up = 0.02 + signal
+                dd = -0.015 - 0.002 * (i % 3)
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=up,
+                        max_drawdown=dd,
+                        fwd_return=up * 0.3,
+                        up3_before_down2="up_first" if signal > 0.01 else "down_first",
+                        up5_before_down3="neither",
+                        up10_before_down5="neither",
+                    )
+                )
+        result = fit_opportunity_walk_forward(rows, RISK_ADJUSTED_OPPORTUNITY_V1, leakage_ok=True)
+        self.assertEqual(result["experiment_id"], "risk_adjusted_opportunity_v1")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {"rejected", "weak_opportunity_signal", "promising_opportunity_signal"},
+        )
+        self.assertIn("full_without_atr", result["metrics"])
+        self.assertIn("downside_control", result["metrics"])
+        self.assertIn("volatility_buckets", result["metrics"])
+
+
 if __name__ == "__main__":
     unittest.main()
