@@ -19,12 +19,14 @@ class ExperimentSpec:
     sensitivity_stride_bars: int
     feature_set: str  # "full" contract name; ATR set is always atr_feature_names
     atr_feature_names: tuple[str, ...] = ("atr_pct",)
+    momentum_feature: str = "ret_24"
     promote_min_auc: float = 0.55
     # Full model must beat ATR-only by at least this AUC margin to count as evidence.
     atr_auc_margin: float = 0.02
     # Full model Brier must be strictly lower than ATR-only Brier.
     require_brier_better_than_atr: bool = True
     clean_drawdown_floor: float = -0.015
+    min_cross_section_size: int = 10
     notes: str = ""
     version: str = "v1"
 
@@ -41,10 +43,12 @@ class ExperimentSpec:
             "sensitivity_stride_bars": self.sensitivity_stride_bars,
             "feature_set": self.feature_set,
             "atr_feature_names": list(self.atr_feature_names),
+            "momentum_feature": self.momentum_feature,
             "promote_min_auc": self.promote_min_auc,
             "atr_auc_margin": self.atr_auc_margin,
             "require_brier_better_than_atr": self.require_brier_better_than_atr,
             "clean_drawdown_floor": self.clean_drawdown_floor,
+            "min_cross_section_size": self.min_cross_section_size,
             "notes": self.notes,
         }
 
@@ -80,9 +84,29 @@ DIRECTIONAL_UP_3PCT_12H_V1 = ExperimentSpec(
     ),
 )
 
+# Cross-sectional relative upside ranking (product-aligned hypothesis).
+RELATIVE_UPSIDE_RANK_12H_V1 = ExperimentSpec(
+    experiment_id="relative_upside_rank_12h_v1",
+    target_name="future_upside_rank_percentile",
+    secondary_target="future_max_upside_12h",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Cross-sectional ranking of future_max_upside_12h within each timestamp; "
+        "evaluate Spearman / top-K vs ATR-only and ret_24 momentum; 12-bar stride."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
+    RELATIVE_UPSIDE_RANK_12H_V1.experiment_id: RELATIVE_UPSIDE_RANK_12H_V1,
 }
 
 

@@ -263,5 +263,152 @@ class ResearchFoundationTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["lineage"]["primary_stride_bars"], 12)
 
 
+class RelativeUpsideRankingTests(unittest.TestCase):
+    def _cross_section(self, ts: datetime, n: int = 12, *, upside_fn=None, atr_fn=None, ret_fn=None):
+        names = feature_names()
+        rows = []
+        for i in range(n):
+            feats = {name: 0.0 for name in names}
+            atr = 1.0 + 0.1 * i if atr_fn is None else atr_fn(i)
+            ret = 0.01 * (i - n / 2) if ret_fn is None else ret_fn(i)
+            upside = 0.01 * i if upside_fn is None else upside_fn(i)
+            feats["atr_pct"] = atr
+            feats["ret_24"] = ret
+            rows.append(
+                _FakeSample(
+                    f"S{i}",
+                    ts,
+                    feats,
+                    max_upside=upside,
+                    max_drawdown=-0.01,
+                    fwd_return=upside / 2,
+                )
+            )
+        return rows
+
+    def test_rank_percentiles_direction(self):
+        from app.research.ranking import rank_percentiles
+
+        pct = rank_percentiles([0.01, 0.05, 0.02])
+        self.assertAlmostEqual(pct[1], 1.0)
+        self.assertAlmostEqual(pct[0], 0.0)
+        self.assertTrue(0.0 < pct[2] < 1.0)
+
+    def test_cross_sectional_grouping_and_min_size(self):
+        from app.research.ranking import annotate_cross_sectional_ranks
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        rows = self._cross_section(start, n=12)
+        rows += self._cross_section(start + timedelta(hours=12), n=5)
+        kept, stats = annotate_cross_sectional_ranks(rows, min_cross_section=10)
+        self.assertEqual(stats["timestamps_considered"], 2)
+        self.assertEqual(stats["timestamps_excluded_below_min"], 1)
+        self.assertEqual(stats["timestamps_used"], 1)
+        self.assertEqual(len(kept), 12)
+        self.assertTrue(all(hasattr(r, "future_upside_rank_percentile") for r in kept))
+        best = max(kept, key=lambda r: r.max_upside)
+        self.assertAlmostEqual(best.future_upside_rank_percentile, 1.0)
+
+    def test_future_upside_ranking_assigns_continuous_fields(self):
+        from app.research.ranking import annotate_cross_sectional_ranks
+
+        ts = datetime(2024, 2, 1, tzinfo=timezone.utc)
+        rows = self._cross_section(ts, n=10)
+        kept, _ = annotate_cross_sectional_ranks(rows, min_cross_section=10)
+        self.assertEqual(kept[0].future_max_upside_12h, kept[0].max_upside)
+        self.assertEqual(kept[0].future_return_12h, kept[0].fwd_return)
+        self.assertEqual(kept[0].future_max_drawdown_12h, kept[0].max_drawdown)
+
+    def test_top_k_and_hit_rates(self):
+        from app.research.ranking import evaluate_timestamp_ranking, score_rows
+        import numpy as np
+
+        ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+        rows = self._cross_section(ts, n=10, upside_fn=lambda i: 0.02 * i)
+        # Perfect ranking scores = upside
+        scores = np.array([r.max_upside for r in rows], dtype=float)
+        scored = score_rows(rows, scores)
+        # Need actual ranks for score_rows path — annotate first
+        from app.research.ranking import annotate_cross_sectional_ranks
+
+        annotate_cross_sectional_ranks(rows, min_cross_section=10)
+        scored = score_rows(rows, scores)
+        metrics = evaluate_timestamp_ranking(scored)
+        self.assertGreater(metrics["spearman"], 0.99)
+        self.assertAlmostEqual(metrics["top_1"]["mean_upside"], max(r.max_upside for r in rows))
+        self.assertEqual(metrics["top_1"]["hit_3pct"], 1.0)  # 0.18 >= 0.03
+        self.assertGreater(metrics["top_5"]["hit_5pct"], 0.0)
+
+    def test_atr_and_momentum_ranking_baselines(self):
+        from app.research.ranking import evaluate_scored_rows_by_timestamp, score_with_feature
+
+        ts = datetime(2024, 4, 1, tzinfo=timezone.utc)
+        # Upside = ATR, so ATR ranking should be strong; momentum opposite.
+        rows = self._cross_section(
+            ts,
+            n=12,
+            upside_fn=lambda i: 0.01 * i,
+            atr_fn=lambda i: 1.0 + 0.1 * i,
+            ret_fn=lambda i: 1.0 - 0.05 * i,
+        )
+        from app.research.ranking import annotate_cross_sectional_ranks
+
+        annotate_cross_sectional_ranks(rows, min_cross_section=10)
+        atr_scores = {i: float(score_with_feature(rows, "atr_pct")[i]) for i in range(len(rows))}
+        mom_scores = {i: float(score_with_feature(rows, "ret_24")[i]) for i in range(len(rows))}
+        _, atr_agg = evaluate_scored_rows_by_timestamp(rows, atr_scores)
+        _, mom_agg = evaluate_scored_rows_by_timestamp(rows, mom_scores)
+        self.assertGreater(atr_agg["spearman"], 0.9)
+        self.assertLess(mom_agg["spearman"], 0.0)
+
+    def test_walk_forward_chronology_and_embargo_for_unique_timestamps(self):
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts = [start + timedelta(hours=12 * i) for i in range(200)]
+        folds = walk_forward_folds(ts, min_train=20, min_test=10)
+        self.assertGreaterEqual(len(folds), 1)
+        gap = embargo()
+        for train_idx, test_idx in folds:
+            self.assertTrue(fold_is_causal(ts, train_idx, test_idx, gap))
+            self.assertLess(max(train_idx), min(test_idx))
+
+    def test_ranking_fit_lineage_never_promotes_live(self):
+        from app.research.experiments import RELATIVE_UPSIDE_RANK_12H_V1
+        from app.research.ranking import fit_ranking_walk_forward
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        # Many timestamps × 12 symbols; upside correlated with atr + a bit of ret_24 noise.
+        for t in range(400):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(12):
+                feats = {n: 0.0 for n in names}
+                atr = 1.0 + 0.2 * i + 0.01 * (t % 7)
+                ret = 0.02 * i
+                feats["atr_pct"] = atr
+                feats["ret_24"] = ret
+                upside = 0.005 * atr + 0.001 * ret
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=upside,
+                        max_drawdown=-0.01 * i,
+                        fwd_return=upside * 0.5,
+                    )
+                )
+        result = fit_ranking_walk_forward(rows, RELATIVE_UPSIDE_RANK_12H_V1, leakage_ok=True)
+        self.assertEqual(result["experiment_id"], "relative_upside_rank_12h_v1")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {"rejected", "weak_ranking_signal", "promising_ranking_signal"},
+        )
+        self.assertIn("comparison_table", result["metrics"])
+        self.assertEqual(result["metrics"]["lineage"]["primary_stride_bars"], 12)
+        self.assertIn("spearman", result["metrics"]["comparison_table"])
+
+
 if __name__ == "__main__":
     unittest.main()
