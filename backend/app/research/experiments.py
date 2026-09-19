@@ -179,6 +179,25 @@ BARRIER_PROBABILITY_V2 = ExperimentSpec(
     ),
 )
 
+# Untouched out-of-sample holdout: frozen barrier spec, latest chronological slice.
+OUT_OF_SAMPLE_HOLDOUT_V1 = ExperimentSpec(
+    experiment_id="out_of_sample_holdout_v1",
+    target_name="barrier_first_touch",
+    secondary_target="",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Frozen barrier_probability_v2 spec; latest ~25% timestamps are untouched holdout; "
+        "development uses earlier data with 12h embargo."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
@@ -187,6 +206,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     RISK_ADJUSTED_OPPORTUNITY_V1.experiment_id: RISK_ADJUSTED_OPPORTUNITY_V1,
     BARRIER_PROBABILITY_V1.experiment_id: BARRIER_PROBABILITY_V1,
     BARRIER_PROBABILITY_V2.experiment_id: BARRIER_PROBABILITY_V2,
+    OUT_OF_SAMPLE_HOLDOUT_V1.experiment_id: OUT_OF_SAMPLE_HOLDOUT_V1,
 }
 
 

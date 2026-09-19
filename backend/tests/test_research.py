@@ -950,5 +950,90 @@ class PointInTimeUniverseTests(unittest.TestCase):
         self.assertIn(("DDD", 2), out["symbols_entering_top"])
 
 
+class OutOfSampleHoldoutTests(unittest.TestCase):
+    def _rows(self, n_ts: int = 120, n_sym: int = 12, *, start: datetime | None = None):
+        start = start or datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for t in range(n_ts):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(n_sym):
+                feats = {n: 0.0 for n in names}
+                feats["atr_pct"] = 1.5 + 0.1 * i
+                feats["ret_24"] = 0.01 * i
+                signal = (i + t) % 3
+                state = "up_first" if signal == 2 else ("down_first" if signal == 1 else "neither")
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=0.02 + 0.01 * signal,
+                        max_drawdown=-0.02,
+                        fwd_return=0.005 * signal,
+                        up3_before_down2=state,
+                        up5_before_down3=state,
+                        up10_before_down5=state,
+                    )
+                )
+        return rows
+
+    def test_chronological_cutoff(self):
+        from app.research.holdout import choose_holdout_cutoff
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts = [start + timedelta(hours=12 * i) for i in range(100)]
+        cutoff, meta = choose_holdout_cutoff(ts, holdout_frac=0.25)
+        self.assertEqual(cutoff, ts[75])
+        self.assertEqual(meta["holdout_timestamps"], 25)
+        self.assertEqual(meta["development_timestamps"], 75)
+
+    def test_no_training_rows_after_cutoff(self):
+        from app.research.holdout import choose_holdout_cutoff, split_development_holdout
+
+        rows = self._rows(n_ts=60, n_sym=12)
+        cutoff, _ = choose_holdout_cutoff([r.ts for r in rows])
+        dev, hold, meta = split_development_holdout(rows, cutoff)
+        self.assertTrue(all(r.ts < cutoff for r in dev))
+        self.assertTrue(all(r.ts >= cutoff for r in hold))
+        self.assertEqual(meta["holdout_rows"], len(hold))
+
+    def test_embargo_drops_overlapping_development(self):
+        from app.research.holdout import choose_holdout_cutoff, split_development_holdout
+        from app.research.spec import embargo
+
+        rows = self._rows(n_ts=60, n_sym=12)
+        cutoff, _ = choose_holdout_cutoff([r.ts for r in rows])
+        dev, hold, meta = split_development_holdout(rows, cutoff)
+        hold_start = min(r.ts for r in hold)
+        gap = embargo()
+        dev_embargoed = [r for r in dev if r.ts <= hold_start - gap]
+        self.assertLessEqual(len(dev_embargoed), len(dev))
+
+    def test_deterministic_random_benchmark(self):
+        from app.research.holdout import random_topk_benchmark
+
+        rows = self._rows(n_ts=30, n_sym=12)
+        a = random_topk_benchmark(rows, "up3_before_down2")
+        b = random_topk_benchmark(rows, "up3_before_down2")
+        self.assertEqual(a["random_topk_success_rate"], b["random_topk_success_rate"])
+        self.assertEqual(a["seed"], b["seed"])
+
+    def test_holdout_fit_never_promotes(self):
+        from app.research.experiments import OUT_OF_SAMPLE_HOLDOUT_V1
+        from app.research.holdout import fit_holdout_experiment
+
+        rows = self._rows(n_ts=120, n_sym=12)
+        result = fit_holdout_experiment(rows, OUT_OF_SAMPLE_HOLDOUT_V1, leakage_ok=True)
+        self.assertEqual(result["experiment_id"], "out_of_sample_holdout_v1")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {"generalizes", "weak_generalization", "fails_to_generalize", "insufficient_holdout"},
+        )
+        self.assertIn("split", result["metrics"])
+        self.assertIn("barriers", result["metrics"])
+
+
 if __name__ == "__main__":
     unittest.main()
