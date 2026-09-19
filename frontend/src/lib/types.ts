@@ -196,6 +196,7 @@ export type Health = {
   ready?: boolean;
   tape?: TapeStatus;
   learner?: LearnerStatus;
+  research?: { phase?: string; message?: string; busy?: boolean };
 };
 
 export type LearnerBucket = {
@@ -254,4 +255,56 @@ export type Activity = {
   symbol?: string;
   id?: string;
   changes?: LearnerChange[];
+};
+
+export type ResearchModel = {
+  id: string;
+  status: string;
+  created_at: string | null;
+  timeframe: string;
+  horizon_hours: number;
+  metrics: {
+    folds?: { n: number; auc: number | null; brier: number | null; baseline_brier: number | null; positive_rate: number; top_quintile_lift: number | null; train_n?: number }[];
+    fold_count?: number;
+    mean_auc?: number | null;
+    mean_brier?: number | null;
+    mean_baseline_brier?: number | null;
+    train_samples?: number;
+    positive_rate?: number | null;
+  } | null;
+  notes: string;
+};
+
+export type Research = {
+  status: {
+    phase: string;
+    message: string;
+    error: string | null;
+    busy: boolean;
+    last_train_at: string | null;
+  };
+  candles: { count: number; symbols: number; oldest: string | null; newest: string | null; timeframe: string };
+  samples: {
+    count: number;
+    labeled: number;
+    positives: number;
+    positive_rate: number | null;
+    timeframe: string;
+    horizon_hours: number;
+    move_pct: number;
+    stride: number;
+  };
+  live: {
+    pending: number;
+    resolved: number;
+    positive_rate: number | null;
+    auc: number | null;
+    brier: number | null;
+    top_quintile_lift: number | null;
+    horizon_hours: number;
+    note: string;
+  };
+  active_model: ResearchModel | null;
+  last_run: ResearchModel | null;
+  disclaimer: string;
 };

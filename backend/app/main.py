@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.database import init_db
 from app.redis_client import close_redis, get_redis
 from app.api import router
+from app.research.service import research_service
 from app.scanner import scanner
 from app.ws import hub
 
@@ -23,7 +24,9 @@ async def lifespan(_: FastAPI):
     except Exception:
         logging.getLogger("radar").warning("Redis unavailable — continuing without cache")
     await scanner.start()
+    await research_service.start()
     yield
+    await research_service.stop()
     await scanner.stop()
     await close_redis()
 

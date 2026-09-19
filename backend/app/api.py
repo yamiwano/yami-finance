@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from uuid import UUID
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, select
@@ -13,6 +14,7 @@ from app.models.settings import AppSettings
 from app.models.signal import Signal
 from app.models.watchlist import WatchlistItem
 from app.market_data.universe import resolve_symbol
+from app.research.service import research_service
 from app.scanner import ACTIVITY, scanner
 from app.schemas import ChartOut, CandleOut, SettingsIn, SignalOut, WatchlistIn
 
@@ -69,6 +71,11 @@ async def health():
         "ready": scanner.provider.is_ready(),
         "tape": tape,
         "learner": learn.public_status(scanner.learner_profile, enabled=scanner.learn_enabled),
+        "research": {
+            "phase": research_service.status.get("phase"),
+            "message": research_service.status.get("message"),
+            "busy": research_service.status.get("busy"),
+        },
     }
 
 
@@ -297,6 +304,19 @@ async def performance(db: AsyncSession = Depends(get_db)):
 @router.post("/performance/reset")
 async def reset_performance(db: AsyncSession = Depends(get_db)):
     return await perf.reset_period(db)
+
+
+@router.get("/research")
+async def research_status():
+    return await research_service.snapshot()
+
+
+@router.post("/research/train")
+async def research_train():
+    if research_service.status.get("busy"):
+        return {"ok": True, "status": "already_running", "message": research_service.status.get("message")}
+    asyncio.create_task(research_service.train_now())
+    return {"ok": True, "status": "started"}
 
 
 @router.get("/settings")

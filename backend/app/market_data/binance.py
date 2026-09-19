@@ -153,6 +153,42 @@ class BinanceProvider(MarketDataProvider):
             bars = [b for b in bars if b.closed]
         return bars[-limit:]
 
+    async def historical_range(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        start: datetime,
+        end: datetime,
+    ) -> list[Bar]:
+        interval = _TF_MAP[timeframe]
+        out: list[Bar] = []
+        cursor_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        now = datetime.now(timezone.utc)
+        while cursor_ms < end_ms:
+            data = await self._get_json(
+                "/api/v3/klines",
+                params={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "startTime": cursor_ms,
+                    "endTime": end_ms,
+                    "limit": 1000,
+                },
+            )
+            if not isinstance(data, list) or not data:
+                break
+            out.extend(_parse_kline_row(row, now=now) for row in data)
+            last_open = int(data[-1][0])
+            nxt = last_open + 1
+            if nxt <= cursor_ms:
+                break
+            cursor_ms = nxt
+            if len(data) < 1000:
+                break
+            await asyncio.sleep(0.05)
+        return [b for b in out if b.closed and start <= b.ts < end]
+
     async def quote(self, symbol: str) -> Quote:
         q = self._quotes.get(symbol)
         if q is None:

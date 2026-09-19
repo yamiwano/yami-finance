@@ -36,6 +36,7 @@ from app.models.asset import Asset
 from app.models.settings import AppSettings
 from app.models.signal import Signal, SignalEvent
 from app.outcomes import update_outcomes
+from app.research.history import persist_closed_pairs, persist_provider_window
 from app import risk
 from app.scoring import score_setup
 from app.strategies import detect
@@ -74,6 +75,12 @@ class Scanner:
             await self._ensure_settings(db)
             await self._expire_non_crypto(db)
             await self._reload_learner(db)
+            try:
+                n = await persist_provider_window(db, self.provider, self.asset_ids, timeframe=Timeframe.H1, limit=400)
+                if n:
+                    log.info("Persisted %s closed 1h bars for research", n)
+            except Exception:
+                log.exception("initial candle persist failed")
         self._running = True
         self._task = asyncio.create_task(self._loop())
         log.info("Scanner started provider=%s", type(self.provider).__name__)
@@ -98,6 +105,9 @@ class Scanner:
                 await self.provider.tick()
                 quotes = await self._refresh_quotes_and_outcomes()
                 closed = self.provider.drain_closed()
+                if closed:
+                    async with SessionLocal() as db:
+                        await persist_closed_pairs(db, self.provider, self.asset_ids, closed)
                 now = time.monotonic()
                 if self.scans == 0:
                     await self.scan_universe(quotes)

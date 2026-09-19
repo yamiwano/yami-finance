@@ -14,6 +14,17 @@ STRATEGY_FNS = [
 ]
 
 
+def evaluate_all(
+    bars: list[Bar],
+    ind: IndicatorSnapshot,
+    tf: Timeframe,
+    knobs_by_strategy: dict[str, dict[str, Any]] | None = None,
+) -> list[StrategyHit]:
+    """Run every strategy and return all hits (fired or not). Used as model features."""
+    extra = knobs_by_strategy or {}
+    return [fn(bars, ind, tf, extra.get(sid)) for sid, fn in STRATEGY_FNS]
+
+
 def detect(
     bars: list[Bar],
     ind: IndicatorSnapshot,
@@ -21,8 +32,7 @@ def detect(
     knobs_by_strategy: dict[str, dict[str, Any]] | None = None,
 ) -> list[StrategyHit]:
     """Run all six strategies. Most return no signal. Prefer the strongest directional hit."""
-    extra = knobs_by_strategy or {}
-    hits = [fn(bars, ind, tf, extra.get(sid)) for sid, fn in STRATEGY_FNS]
+    hits = evaluate_all(bars, ind, tf, knobs_by_strategy)
     fired = [h for h in hits if h.fired]
     if not fired:
         return []

@@ -29,6 +29,14 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:3000"
 
+    # Research loop (OHLCV dataset + walk-forward model). Off does not stop the scanner.
+    research_enabled: bool = True
+    research_timeframe: str = "1h"
+    research_horizon_hours: int = 12
+    research_move_pct: float = 0.03
+    research_backfill_days: int = 90
+    research_sample_stride: int = 6
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

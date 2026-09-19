@@ -1,4 +1,4 @@
-import type { Activity, ChartPayload, Health, Performance, ScannerRow, Settings, Signal, WatchItem } from "./types";
+import type { Activity, ChartPayload, Health, Performance, Research, ScannerRow, Settings, Signal, WatchItem } from "./types";
 
 declare global {
   interface Window {
@@ -87,6 +87,8 @@ export const api = {
   history: (status?: string) => get<Signal[]>(`/api/history${status ? `?status=${status}` : ""}`),
   performance: () => get<Performance>("/api/performance"),
   resetPerformance: () => send<Performance>("/api/performance/reset", "POST"),
+  research: () => get<Research>("/api/research"),
+  trainResearch: () => send<{ ok: boolean; status: string; message?: string }>("/api/research/train", "POST"),
   settings: () => get<Settings>("/api/settings"),
   saveSettings: (body: Partial<Settings>) => send<Settings>("/api/settings", "PUT", body),
   watchlist: () => get<WatchItem[]>("/api/watchlist"),
