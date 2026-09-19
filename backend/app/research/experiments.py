@@ -236,6 +236,25 @@ MULTI_PERIOD_ROBUSTNESS_V1 = ExperimentSpec(
     ),
 )
 
+# Regime analysis: market context of signal performance (no model changes).
+REGIME_ANALYSIS_V1 = ExperimentSpec(
+    experiment_id="regime_analysis_v1",
+    target_name="barrier_first_touch",
+    secondary_target="",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Point-in-time regime characterization (BTC trend/vol, breadth, market vol, "
+        "dispersion, volume) with development-fitted thresholds; frozen model eval per regime."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
@@ -247,6 +266,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     OUT_OF_SAMPLE_HOLDOUT_V1.experiment_id: OUT_OF_SAMPLE_HOLDOUT_V1,
     PORTFOLIO_BACKTEST_V1.experiment_id: PORTFOLIO_BACKTEST_V1,
     MULTI_PERIOD_ROBUSTNESS_V1.experiment_id: MULTI_PERIOD_ROBUSTNESS_V1,
+    REGIME_ANALYSIS_V1.experiment_id: REGIME_ANALYSIS_V1,
 }
 
 

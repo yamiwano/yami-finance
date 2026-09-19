@@ -1284,5 +1284,128 @@ class MultiPeriodRobustnessTests(unittest.TestCase):
         self.assertIn("combined", result["metrics"])
 
 
+class RegimeAnalysisTests(unittest.TestCase):
+    def _bars(self, n: int, *, start: datetime, price: float = 100.0, drift: float = 0.0):
+        bars = []
+        for i in range(n):
+            p = price * (1 + drift * i)
+            bars.append(
+                Bar(
+                    ts=start + timedelta(hours=i),
+                    open=p,
+                    high=p * 1.01,
+                    low=p * 0.99,
+                    close=p * 1.001,
+                    volume=1000,
+                    closed=True,
+                )
+            )
+        return bars
+
+    def _rows(self, n_ts: int = 40, n_sym: int = 12, *, start: datetime | None = None):
+        start = start or datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for t in range(n_ts):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(n_sym):
+                feats = {n: 0.0 for n in names}
+                feats["atr_pct"] = 1.5 + 0.1 * i
+                feats["ret_24"] = 0.01 * (i - 5)
+                feats["relative_volume"] = 1.0 + 0.1 * i
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=0.02,
+                        max_drawdown=-0.01,
+                        fwd_return=0.005,
+                        up3_before_down2="up_first",
+                    )
+                )
+        return rows
+
+    def test_trailing_return_uses_past_only(self):
+        from app.research.regime import trailing_return
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = self._bars(48, start=start, price=100.0, drift=0.001)
+        ts = start + timedelta(hours=24)
+        r = trailing_return(bars, ts, 24)
+        self.assertIsNotNone(r)
+        # Mutating future bars must not change the value
+        future = list(bars)
+        for j in range(25, 48):
+            future[j] = future[j].model_copy(update={"close": 1e6})
+        self.assertEqual(trailing_return(future, ts, 24), r)
+
+    def test_btc_trend_regime_thresholds(self):
+        from app.research.regime import btc_trend_regime
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bull = self._bars(48, start=start, price=100.0, drift=0.001)
+        ts = start + timedelta(hours=24)
+        self.assertEqual(btc_trend_regime(bull, ts), "bullish")
+        bear = self._bars(48, start=start, price=100.0, drift=-0.001)
+        self.assertEqual(btc_trend_regime(bear, ts), "bearish")
+        flat = self._bars(48, start=start, price=100.0, drift=0.0)
+        self.assertEqual(btc_trend_regime(flat, ts), "neutral")
+
+    def test_market_breadth_regime(self):
+        from app.research.regime import market_breadth_regime
+
+        rows = []
+        for i in range(10):
+            rows.append(_FakeSample(f"S{i}", datetime(2024, 1, 1, tzinfo=timezone.utc), {"ret_24": 0.01 if i < 7 else -0.01}))
+        self.assertEqual(market_breadth_regime(rows), "strong")
+        rows = [_FakeSample(f"S{i}", datetime(2024, 1, 1, tzinfo=timezone.utc), {"ret_24": -0.01 if i < 7 else 0.01}) for i in range(10)]
+        self.assertEqual(market_breadth_regime(rows), "weak")
+
+    def test_thresholds_fit_on_training_only(self):
+        from app.research.regime import fit_regime_thresholds
+
+        rows = self._rows(n_ts=40, n_sym=12)
+        btc = self._bars(200, start=datetime(2024, 1, 1, tzinfo=timezone.utc))
+        train_end = datetime(2024, 1, 20, tzinfo=timezone.utc)
+        th = fit_regime_thresholds(rows, btc, train_end=train_end)
+        self.assertEqual(th["train_end"], train_end.isoformat())
+        self.assertIn("btc_volatility", th)
+        self.assertIn("market_volatility", th)
+
+    def test_regime_assignment_reproducible(self):
+        from app.research.regime import assign_regimes, fit_regime_thresholds
+
+        rows = self._rows(n_ts=40, n_sym=12)
+        btc = self._bars(200, start=datetime(2024, 1, 1, tzinfo=timezone.utc))
+        train_end = datetime(2024, 1, 20, tzinfo=timezone.utc)
+        th = fit_regime_thresholds(rows, btc, train_end=train_end)
+        a = assign_regimes(rows, btc, th)
+        b = assign_regimes(rows, btc, th)
+        self.assertEqual(a, b)
+
+    def test_regime_transition_labels(self):
+        from app.research.regime import regime_transition
+
+        self.assertEqual(regime_transition(None, "low"), "unknown")
+        self.assertEqual(regime_transition("low", "low"), "stable_low")
+        self.assertEqual(regime_transition("low", "high"), "low_to_high")
+
+    def test_interaction_label(self):
+        from app.research.regime import interaction_label
+
+        self.assertEqual(interaction_label("bullish", "high"), "bullish×high")
+        self.assertEqual(interaction_label("unknown", "high"), "unknown")
+
+    def test_insufficient_sample_handling(self):
+        from app.research.regime import group_rows_by_regime
+
+        rows = self._rows(n_ts=5, n_sym=3)
+        regime_by_ts = {r.ts: {"btc_trend": "bullish"} for r in rows}
+        groups = group_rows_by_regime(rows, regime_by_ts, "btc_trend")
+        self.assertIn("bullish", groups)
+        self.assertLess(len(groups["bullish"]), 30)
+
+
 if __name__ == "__main__":
     unittest.main()
