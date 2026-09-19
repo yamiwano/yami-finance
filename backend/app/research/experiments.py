@@ -160,6 +160,25 @@ BARRIER_PROBABILITY_V1 = ExperimentSpec(
     ),
 )
 
+# Same barrier targets on a point-in-time historical universe (dataset experiment).
+BARRIER_PROBABILITY_V2 = ExperimentSpec(
+    experiment_id="barrier_probability_v2",
+    target_name="barrier_first_touch",
+    secondary_target="",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Identical to barrier_probability_v1 except the universe is point-in-time "
+        "(trailing 24h quote volume top-N) instead of today's top-N."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
@@ -167,6 +186,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     VOLATILITY_ADJUSTED_UPSIDE_V1.experiment_id: VOLATILITY_ADJUSTED_UPSIDE_V1,
     RISK_ADJUSTED_OPPORTUNITY_V1.experiment_id: RISK_ADJUSTED_OPPORTUNITY_V1,
     BARRIER_PROBABILITY_V1.experiment_id: BARRIER_PROBABILITY_V1,
+    BARRIER_PROBABILITY_V2.experiment_id: BARRIER_PROBABILITY_V2,
 }
 
 

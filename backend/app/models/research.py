@@ -73,3 +73,29 @@ class Prediction(Base):
     large_up_move: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     clean_up_move: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ResearchUniverseMembership(Base):
+    """Point-in-time universe membership at a research timestamp.
+
+    Selection uses only information available at or before ``ts`` (trailing candles).
+    """
+
+    __tablename__ = "research_universe_membership"
+    __table_args__ = (
+        UniqueConstraint("ts", "symbol", "timeframe", name="uq_research_universe_membership"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8), index=True)
+    eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    selection_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quote_volume_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    warmup_bars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # known | inferred | unknown — evidence strength for historical existence.
+    source: Mapped[str] = mapped_column(String(16), default="inferred")
+    reason: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

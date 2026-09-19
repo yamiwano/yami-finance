@@ -834,5 +834,121 @@ class BarrierProbabilityTests(unittest.TestCase):
         self.assertIn("full_without_atr", result["metrics"]["barriers"]["up3_before_down2"])
 
 
+class PointInTimeUniverseTests(unittest.TestCase):
+    def _bars(self, symbol_seed: int, n: int, *, start: datetime, price: float = 100.0, volume: float = 1000.0):
+        bars = []
+        for i in range(n):
+            bars.append(
+                Bar(
+                    ts=start + timedelta(hours=i),
+                    open=price,
+                    high=price * 1.01,
+                    low=price * 0.99,
+                    close=price * (1 + 0.0001 * ((i + symbol_seed) % 5)),
+                    volume=volume * (1 + (i % 3)),
+                    closed=True,
+                )
+            )
+        return bars
+
+    def test_trailing_quote_volume_uses_only_past(self):
+        from app.research.universe import trailing_quote_volume_24h
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = self._bars(0, 48, start=start, price=100.0, volume=1000.0)
+        ts = start + timedelta(hours=24)
+        qv = trailing_quote_volume_24h(bars, ts)
+        self.assertIsNotNone(qv)
+        # Mutating future bars must not change the value at ts
+        future = list(bars)
+        for j in range(25, 48):
+            future[j] = future[j].model_copy(update={"volume": 1e9, "close": 1e6})
+        self.assertEqual(trailing_quote_volume_24h(future, ts), qv)
+
+    def test_trailing_window_boundary(self):
+        from app.research.universe import trailing_quote_volume_24h
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = self._bars(0, 30, start=start, price=100.0, volume=10.0)
+        ts = start + timedelta(hours=24)
+        # bar at exactly ts-24h excluded; bar at ts included
+        qv = trailing_quote_volume_24h(bars, ts)
+        self.assertIsNotNone(qv)
+        expected = sum(
+            b.close * b.volume for b in bars if start < b.ts <= ts
+        )
+        self.assertAlmostEqual(qv, expected)
+
+    def test_universe_selection_top_n_and_warmup(self):
+        from app.research.universe import select_universe_at
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts = start + timedelta(hours=100)
+        bars_by = {
+            "AAA": self._bars(1, 120, start=start, volume=100.0),
+            "BBB": self._bars(2, 120, start=start, volume=500.0),
+            "CCC": self._bars(3, 120, start=start, volume=300.0),
+            "NEW": self._bars(4, 10, start=ts - timedelta(hours=9), volume=9999.0),  # insufficient warmup
+        }
+        rows = select_universe_at(bars_by, ts, top_n=2, warmup_bars=80)
+        selected = [r for r in rows if r["selected"]]
+        self.assertEqual([r["symbol"] for r in selected], ["BBB", "CCC"])
+        new = next(r for r in rows if r["symbol"] == "NEW")
+        self.assertFalse(new["eligible"])
+        self.assertEqual(new["reason"], "insufficient_warmup")
+        self.assertIsNone(new["selection_rank"])
+
+    def test_no_future_volume_changes_selection(self):
+        from app.research.universe import select_universe_at
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts = start + timedelta(hours=100)
+        bars_by = {
+            "AAA": self._bars(1, 120, start=start, volume=100.0),
+            "BBB": self._bars(2, 120, start=start, volume=200.0),
+        }
+        before = select_universe_at(bars_by, ts, top_n=1, warmup_bars=80)
+        mutated = {k: list(v) for k, v in bars_by.items()}
+        for sym in mutated:
+            for j in range(len(mutated[sym])):
+                if mutated[sym][j].ts > ts:
+                    mutated[sym][j] = mutated[sym][j].model_copy(update={"volume": 1e9, "close": 1e6})
+        after = select_universe_at(mutated, ts, top_n=1, warmup_bars=80)
+        self.assertEqual(
+            [r["symbol"] for r in before if r["selected"]],
+            [r["symbol"] for r in after if r["selected"]],
+        )
+
+    def test_deterministic_reconstruction(self):
+        from app.research.universe import select_universe_at
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts = start + timedelta(hours=100)
+        bars_by = {
+            "AAA": self._bars(1, 120, start=start, volume=100.0),
+            "BBB": self._bars(2, 120, start=start, volume=200.0),
+            "CCC": self._bars(3, 120, start=start, volume=150.0),
+        }
+        a = select_universe_at(bars_by, ts, top_n=2, warmup_bars=80)
+        b = select_universe_at(bars_by, ts, top_n=2, warmup_bars=80)
+        self.assertEqual(
+            [(r["symbol"], r["selection_rank"]) for r in a],
+            [(r["symbol"], r["selection_rank"]) for r in b],
+        )
+
+    def test_compare_universes_overlap(self):
+        from app.research.universe import compare_universes
+
+        old = ["AAA", "BBB", "CCC"]
+        new = {
+            datetime(2024, 1, 2, tzinfo=timezone.utc): ["AAA", "DDD"],
+            datetime(2024, 1, 3, tzinfo=timezone.utc): ["BBB", "DDD"],
+        }
+        out = compare_universes(old, new)
+        self.assertEqual(out["old_universe_size"], 3)
+        self.assertAlmostEqual(out["average_overlap_count"], 1.0)
+        self.assertIn(("DDD", 2), out["symbols_entering_top"])
+
+
 if __name__ == "__main__":
     unittest.main()
