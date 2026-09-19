@@ -255,6 +255,25 @@ REGIME_ANALYSIS_V1 = ExperimentSpec(
     ),
 )
 
+# Regime filter OOS: frozen filters on genuinely untouched future data.
+REGIME_FILTER_OOS_V1 = ExperimentSpec(
+    experiment_id="regime_filter_oos_v1",
+    target_name="barrier_first_touch",
+    secondary_target="",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Frozen regime filters (high dispersion, normal volume, combined) applied to "
+        "frozen barrier model on OOS period after regime discovery."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
@@ -267,6 +286,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     PORTFOLIO_BACKTEST_V1.experiment_id: PORTFOLIO_BACKTEST_V1,
     MULTI_PERIOD_ROBUSTNESS_V1.experiment_id: MULTI_PERIOD_ROBUSTNESS_V1,
     REGIME_ANALYSIS_V1.experiment_id: REGIME_ANALYSIS_V1,
+    REGIME_FILTER_OOS_V1.experiment_id: REGIME_FILTER_OOS_V1,
 }
 
 

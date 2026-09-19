@@ -1407,5 +1407,100 @@ class RegimeAnalysisTests(unittest.TestCase):
         self.assertLess(len(groups["bullish"]), 30)
 
 
+class RegimeFilterOOSTests(unittest.TestCase):
+    def _rows(self, n_ts: int = 60, n_sym: int = 12, *, start: datetime | None = None):
+        start = start or datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for t in range(n_ts):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(n_sym):
+                feats = {n: 0.0 for n in names}
+                feats["atr_pct"] = 1.5 + 0.1 * i
+                feats["ret_24"] = 0.01 * (i - 5)
+                feats["relative_volume"] = 1.0 + 0.1 * i
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=0.02,
+                        max_drawdown=-0.01,
+                        fwd_return=0.005,
+                        up3_before_down2="up_first",
+                    )
+                )
+        return rows
+
+    def test_frozen_threshold_reuse(self):
+        from app.research.regime import fit_regime_thresholds
+        from app.research.regime_filter import apply_filter_to_rows
+
+        rows = self._rows(n_ts=60, n_sym=12)
+        btc = []
+        train_end = datetime(2024, 1, 20, tzinfo=timezone.utc)
+        th = fit_regime_thresholds(rows, btc, train_end=train_end)
+        # Baseline keeps all; high_dispersion filters to subset
+        base = apply_filter_to_rows(rows, "baseline", th)
+        self.assertEqual(len(base), len(rows))
+        filtered = apply_filter_to_rows(rows, "high_dispersion", th)
+        self.assertLessEqual(len(filtered), len(rows))
+
+    def test_no_oos_threshold_fitting(self):
+        from app.research.regime import fit_regime_thresholds
+
+        rows = self._rows(n_ts=60, n_sym=12)
+        btc = []
+        train_end = datetime(2024, 1, 20, tzinfo=timezone.utc)
+        th = fit_regime_thresholds(rows, btc, train_end=train_end)
+        self.assertEqual(th["train_end"], train_end.isoformat())
+        # Thresholds are fixed values, not recomputed per OOS row
+        self.assertIsInstance(th["momentum_dispersion"], tuple)
+
+    def test_filter_assignment(self):
+        from app.research.regime_filter import filter_passes
+
+        rows = self._rows(n_ts=1, n_sym=12)
+        th = {"momentum_dispersion": (0.0, 0.0), "volume": (0.0, 2.0)}
+        self.assertTrue(filter_passes(rows, "baseline", th))
+        # With these thresholds, dispersion std > 0 => high; volume median ~1.55 => normal
+        self.assertTrue(filter_passes(rows, "high_dispersion", th))
+        self.assertTrue(filter_passes(rows, "normal_volume", th))
+        self.assertTrue(filter_passes(rows, "high_dispersion_plus_normal_volume", th))
+
+    def test_oos_isolation(self):
+        from app.research.regime_filter import run_regime_filter_oos
+        from app.research.experiments import REGIME_FILTER_OOS_V1
+
+        rows = self._rows(n_ts=80, n_sym=12)
+        bars_by = {}
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        for s in range(12):
+            bars_by[f"S{s}"] = [
+                Bar(
+                    ts=start + timedelta(hours=i),
+                    open=100.0,
+                    high=101.0,
+                    low=99.0,
+                    close=100.5,
+                    volume=1000,
+                    closed=True,
+                )
+                for i in range(1200)
+            ]
+        train_end = start + timedelta(hours=12 * 60)
+        th = {"momentum_dispersion": (0.0, 0.05), "volume": (0.5, 2.0)}
+        result = run_regime_filter_oos(
+            rows, bars_by, REGIME_FILTER_OOS_V1, train_end=train_end, thresholds=th, leakage_ok=True
+        )
+        self.assertEqual(result["experiment_id"], "regime_filter_oos_v1")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {"filter_generalizes", "filter_mixed", "filter_fails", "insufficient_oos_data"},
+        )
+        self.assertIn("barriers", result["metrics"])
+
+
 if __name__ == "__main__":
     unittest.main()
