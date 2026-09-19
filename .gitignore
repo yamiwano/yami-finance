@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv312/
+venv/
+.env
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+.next-desktop/
+out/
+dist/
+*.tsbuildinfo
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Data
+postgres-data/
+redis-data/
+*.log
+*.db
+radar.db

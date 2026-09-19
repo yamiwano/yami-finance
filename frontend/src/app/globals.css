@@ -1,0 +1,35 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  background: #07090f;
+  color: #d5dce8;
+}
+
+body {
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1c2433 #07090f;
+}
+
+.terminal-grid {
+  background-image: linear-gradient(rgba(28, 36, 51, 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(28, 36, 51, 0.35) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.score-bar {
+  background: linear-gradient(90deg, #2a3344, #3dd68c);
+}

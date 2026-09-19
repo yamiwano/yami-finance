@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FRONTEND="$ROOT/frontend"
+
+if [[ "${1:-}" == "--install" ]]; then
+  exec "$ROOT/scripts/install-desktop.sh"
+fi
+
+if [[ ! -d "$FRONTEND/node_modules" ]]; then
+  (cd "$FRONTEND" && npm install)
+fi
+
+exec /usr/bin/python3 "$ROOT/desktop/yami_financier.py"

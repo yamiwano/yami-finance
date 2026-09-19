@@ -1,0 +1,9 @@
+{
+  "name": "yami-financier",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "desktop": "scripts/yami-financier",
+    "desktop:install": "scripts/install-desktop.sh"
+  }
+}

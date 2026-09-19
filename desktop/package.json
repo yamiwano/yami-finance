@@ -1,0 +1,14 @@
+{
+  "name": "yami-financier",
+  "productName": "Yami Financier",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Yami Financier desktop shell",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^34.5.8"
+  }
+}
