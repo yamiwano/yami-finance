@@ -1035,5 +1035,158 @@ class OutOfSampleHoldoutTests(unittest.TestCase):
         self.assertIn("barriers", result["metrics"])
 
 
+class PortfolioBacktestTests(unittest.TestCase):
+    def _bars(self, n: int, *, start: datetime, price: float = 100.0):
+        bars = []
+        for i in range(n):
+            p = price * (1 + 0.001 * i)
+            bars.append(
+                Bar(
+                    ts=start + timedelta(hours=i),
+                    open=p,
+                    high=p * 1.02,
+                    low=p * 0.99,
+                    close=p * 1.001,
+                    volume=1000,
+                    closed=True,
+                )
+            )
+        return bars
+
+    def test_next_candle_entry(self):
+        from app.research.portfolio import simulate_trade_exit
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = self._bars(20, start=start)
+        # Signal at bar 0, entry at bar 1 open
+        entry_idx = 1
+        entry_price = bars[entry_idx].open
+        out = simulate_trade_exit(bars, entry_idx, entry_price, 0.03, 0.02, 12)
+        self.assertIsNotNone(out)
+        exit_idx, exit_price, reason = out
+        self.assertGreater(exit_idx, entry_idx)
+        self.assertIn(reason, {"up_barrier", "down_barrier", "timeout", "ambiguous"})
+
+    def test_ambiguous_same_candle_exits_at_open(self):
+        from app.research.portfolio import simulate_trade_exit
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = self._bars(5, start=start)
+        entry_idx = 1
+        entry_price = 100.0
+        # Make bar 2 touch both barriers
+        bars[2] = bars[2].model_copy(update={"high": 104.0, "low": 97.0, "open": 100.5})
+        out = simulate_trade_exit(bars, entry_idx, entry_price, 0.03, 0.02, 12)
+        self.assertIsNotNone(out)
+        exit_idx, exit_price, reason = out
+        self.assertEqual(reason, "ambiguous")
+        self.assertEqual(exit_price, 100.5)
+
+    def test_timeout_exit(self):
+        from app.research.portfolio import simulate_trade_exit
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = self._bars(20, start=start)
+        entry_idx = 1
+        entry_price = 100.0
+        # Flat bars never touch barriers
+        flat = [
+            b.model_copy(update={"high": 100.5, "low": 99.5, "close": 100.0, "open": 100.0})
+            for b in bars
+        ]
+        out = simulate_trade_exit(flat, entry_idx, entry_price, 0.03, 0.02, 12)
+        self.assertIsNotNone(out)
+        _, _, reason = out
+        self.assertEqual(reason, "timeout")
+
+    def test_transaction_cost_and_slippage(self):
+        from app.research.portfolio import COST_PER_EVENT
+
+        self.assertAlmostEqual(COST_PER_EVENT, 0.002)
+        # Net = gross - (cost + slippage)
+        gross = 0.03
+        net = gross - (COST_PER_EVENT + 0.001)
+        self.assertAlmostEqual(net, 0.027)
+
+    def test_no_leverage_exposure_cap(self):
+        from app.research.portfolio import run_portfolio_backtest
+        import numpy as np
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        bars_by = {}
+        for s in range(12):
+            sym = f"S{s}"
+            bars_by[sym] = self._bars(40, start=start)
+            for t in range(0, 20, 12):
+                ts = start + timedelta(hours=t)
+                feats = {n: 0.0 for n in names}
+                feats["atr_pct"] = 1.0 + 0.1 * s
+                rows.append(
+                    _FakeSample(
+                        sym,
+                        ts,
+                        feats,
+                        max_upside=0.02,
+                        max_drawdown=-0.01,
+                        fwd_return=0.01,
+                        up3_before_down2="up_first",
+                    )
+                )
+        scores = np.array([1.0 for _ in rows])
+        res = run_portfolio_backtest(
+            rows,
+            bars_by,
+            scores,
+            barrier="up3_before_down2",
+            up_pct=0.03,
+            down_pct=0.02,
+            top_k=5,
+            horizon_bars=12,
+            strategy="full",
+        )
+        for point in res["equity_curve"]:
+            self.assertLessEqual(point["gross_exposure"], 1.0 + 1e-9)
+        self.assertIn("trade_ledger", res)
+        self.assertIn("equity_curve", res)
+
+    def test_deterministic_random_benchmark(self):
+        from app.research.portfolio import run_portfolio_backtest
+        import numpy as np
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        bars_by = {}
+        for s in range(12):
+            sym = f"S{s}"
+            bars_by[sym] = self._bars(40, start=start)
+            for t in range(0, 20, 12):
+                ts = start + timedelta(hours=t)
+                feats = {n: 0.0 for n in names}
+                rows.append(
+                    _FakeSample(
+                        sym,
+                        ts,
+                        feats,
+                        max_upside=0.02,
+                        max_drawdown=-0.01,
+                        fwd_return=0.01,
+                        up3_before_down2="up_first",
+                    )
+                )
+        scores = np.zeros(len(rows))
+        a = run_portfolio_backtest(
+            rows, bars_by, scores, barrier="up3_before_down2", up_pct=0.03, down_pct=0.02,
+            top_k=5, horizon_bars=12, strategy="random", seed=42,
+        )
+        b = run_portfolio_backtest(
+            rows, bars_by, scores, barrier="up3_before_down2", up_pct=0.03, down_pct=0.02,
+            top_k=5, horizon_bars=12, strategy="random", seed=42,
+        )
+        self.assertEqual(a["cumulative_net_return"], b["cumulative_net_return"])
+
+
 if __name__ == "__main__":
     unittest.main()
