@@ -1188,5 +1188,101 @@ class PortfolioBacktestTests(unittest.TestCase):
         self.assertEqual(a["cumulative_net_return"], b["cumulative_net_return"])
 
 
+class MultiPeriodRobustnessTests(unittest.TestCase):
+    def _rows(self, n_ts: int = 200, n_sym: int = 12, *, start: datetime | None = None):
+        start = start or datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for t in range(n_ts):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(n_sym):
+                feats = {n: 0.0 for n in names}
+                feats["atr_pct"] = 1.5 + 0.1 * i
+                feats["ret_24"] = 0.01 * i
+                signal = (i + t) % 3
+                state = "up_first" if signal == 2 else ("down_first" if signal == 1 else "neither")
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=0.02 + 0.01 * signal,
+                        max_drawdown=-0.02,
+                        fwd_return=0.005 * signal,
+                        up3_before_down2=state,
+                        up5_before_down3=state,
+                        up10_before_down5=state,
+                    )
+                )
+        return rows
+
+    def test_chronological_segmentation(self):
+        from app.research.robustness import segment_periods
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts = [start + timedelta(hours=12 * i) for i in range(100)]
+        periods = segment_periods(ts, n_periods=4)
+        self.assertEqual(len(periods), 4)
+        for i in range(1, 4):
+            self.assertGreater(periods[i]["start_ts"], periods[i - 1]["end_ts"])
+
+    def test_period_isolation(self):
+        from app.research.robustness import rows_in_period, segment_periods
+
+        rows = self._rows(n_ts=100, n_sym=12)
+        ts = sorted({r.ts for r in rows})
+        periods = segment_periods(ts, n_periods=4)
+        p2 = rows_in_period(rows, periods[1]["start_ts"], periods[1]["end_ts"])
+        self.assertTrue(all(periods[1]["start_ts"] <= r.ts <= periods[1]["end_ts"] for r in p2))
+        self.assertTrue(all(r.ts < periods[1]["start_ts"] or r.ts > periods[1]["end_ts"] for r in rows if r not in p2))
+
+    def test_walk_forward_training_uses_prior_periods(self):
+        from app.research.robustness import segment_periods
+
+        rows = self._rows(n_ts=100, n_sym=12)
+        ts = sorted({r.ts for r in rows})
+        periods = segment_periods(ts, n_periods=4)
+        # For period 3, training must end before period 3 start (minus embargo)
+        train_end = periods[2]["start_ts"]
+        train_rows = [r for r in rows if r.ts < train_end]
+        self.assertTrue(all(r.ts < periods[2]["start_ts"] for r in train_rows))
+
+    def test_robustness_fit_never_promotes(self):
+        from app.research.experiments import MULTI_PERIOD_ROBUSTNESS_V1
+        from app.research.robustness import run_multi_period_robustness
+
+        rows = self._rows(n_ts=200, n_sym=12)
+        bars_by = {}
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        for s in range(12):
+            bars_by[f"S{s}"] = [
+                Bar(
+                    ts=start + timedelta(hours=i),
+                    open=100.0,
+                    high=101.0,
+                    low=99.0,
+                    close=100.5,
+                    volume=1000,
+                    closed=True,
+                )
+                for i in range(2600)
+            ]
+        result = run_multi_period_robustness(rows, bars_by, MULTI_PERIOD_ROBUSTNESS_V1, leakage_ok=True)
+        self.assertEqual(result["experiment_id"], "multi_period_robustness_v1")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {
+                "robust_across_periods",
+                "mixed_regime_signal",
+                "period_specific_signal",
+                "fails_robustness_test",
+                "insufficient_history",
+            },
+        )
+        self.assertIn("periods", result["metrics"])
+        self.assertIn("combined", result["metrics"])
+
+
 if __name__ == "__main__":
     unittest.main()

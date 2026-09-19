@@ -217,6 +217,25 @@ PORTFOLIO_BACKTEST_V1 = ExperimentSpec(
     ),
 )
 
+# Multi-period historical robustness on expanded history.
+MULTI_PERIOD_ROBUSTNESS_V1 = ExperimentSpec(
+    experiment_id="multi_period_robustness_v1",
+    target_name="barrier_first_touch",
+    secondary_target="",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Frozen barrier spec evaluated across chronological periods with walk-forward "
+        "training on prior periods only; portfolio mechanics from portfolio_backtest_v1."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
@@ -227,6 +246,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     BARRIER_PROBABILITY_V2.experiment_id: BARRIER_PROBABILITY_V2,
     OUT_OF_SAMPLE_HOLDOUT_V1.experiment_id: OUT_OF_SAMPLE_HOLDOUT_V1,
     PORTFOLIO_BACKTEST_V1.experiment_id: PORTFOLIO_BACKTEST_V1,
+    MULTI_PERIOD_ROBUSTNESS_V1.experiment_id: MULTI_PERIOD_ROBUSTNESS_V1,
 }
 
 
