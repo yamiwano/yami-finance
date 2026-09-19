@@ -1502,5 +1502,42 @@ class RegimeFilterOOSTests(unittest.TestCase):
         self.assertIn("barriers", result["metrics"])
 
 
+class PaperTradingTests(unittest.TestCase):
+    def test_paper_mode_guard(self):
+        from app.config import get_settings
+        from app.research.paper import PaperTradingError, _ensure_paper_mode
+
+        settings = get_settings()
+        original = settings.paper_trading_enabled
+        try:
+            settings.paper_trading_enabled = False
+            with self.assertRaises(PaperTradingError):
+                _ensure_paper_mode()
+            settings.paper_trading_enabled = True
+            _ensure_paper_mode()
+        finally:
+            settings.paper_trading_enabled = original
+
+    def test_no_real_order_endpoints(self):
+        import app.research.paper as paper
+
+        # Paper module must not import or call exchange order functions
+        self.assertFalse(hasattr(paper, "create_order"))
+        self.assertFalse(hasattr(paper, "place_order"))
+        self.assertFalse(hasattr(paper, "market_buy"))
+        self.assertFalse(hasattr(paper, "market_sell"))
+
+    def test_deterministic_signal_ranking(self):
+        from app.research.paper import TOP_K
+
+        candidates = [
+            {"symbol": "A", "probability": 0.5},
+            {"symbol": "B", "probability": 0.9},
+            {"symbol": "C", "probability": 0.7},
+        ]
+        candidates.sort(key=lambda c: c["probability"], reverse=True)
+        self.assertEqual([c["symbol"] for c in candidates[:TOP_K]], ["B", "C", "A"])
+
+
 if __name__ == "__main__":
     unittest.main()

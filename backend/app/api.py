@@ -15,6 +15,7 @@ from app.models.signal import Signal
 from app.models.watchlist import WatchlistItem
 from app.market_data.universe import resolve_symbol
 from app.research.service import research_service
+from app.research.paper import paper_trading_service
 from app.scanner import ACTIVITY, scanner
 from app.schemas import ChartOut, CandleOut, SettingsIn, SignalOut, WatchlistIn
 
@@ -304,6 +305,11 @@ async def performance(db: AsyncSession = Depends(get_db)):
 @router.post("/performance/reset")
 async def reset_performance(db: AsyncSession = Depends(get_db)):
     return await perf.reset_period(db)
+
+
+@router.get("/paper-trading")
+async def paper_trading_snapshot():
+    return await paper_trading_service.snapshot()
 
 
 @router.get("/research")

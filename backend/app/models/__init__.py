@@ -1,5 +1,6 @@
 from app.models.asset import Asset
 from app.models.candle import Candle
+from app.models.paper import PaperAccount, PaperPosition, PaperSignal, PaperTrade
 from app.models.research import ModelVersion, Prediction, ResearchSample, ResearchUniverseMembership
 from app.models.settings import AppSettings
 from app.models.signal import Signal, SignalEvent
@@ -12,6 +13,10 @@ __all__ = [
     "Prediction",
     "ResearchSample",
     "ResearchUniverseMembership",
+    "PaperAccount",
+    "PaperPosition",
+    "PaperSignal",
+    "PaperTrade",
     "AppSettings",
     "Signal",
     "SignalEvent",

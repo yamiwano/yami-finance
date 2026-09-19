@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     research_backfill_days: int = 90
     research_sample_stride: int = 6
 
+    # Live paper trading (simulated only; no real orders).
+    paper_trading_enabled: bool = False
+    paper_trading_starting_capital: float = 10_000.0
+    paper_trading_top_k: int = 5
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
