@@ -704,5 +704,135 @@ class RiskAdjustedOpportunityTests(unittest.TestCase):
         self.assertIn("volatility_buckets", result["metrics"])
 
 
+class BarrierProbabilityTests(unittest.TestCase):
+    def _bar(self, ts: datetime, high: float, low: float, close: float | None = None) -> Bar:
+        return Bar(
+            ts=ts,
+            open=close if close is not None else high,
+            high=high,
+            low=low,
+            close=close if close is not None else high,
+            volume=1000,
+            closed=True,
+        )
+
+    def test_barrier_detection_all_specs(self):
+        from app.research.opportunity import first_touch_barrier
+
+        entry = 100.0
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        # Up-first for each spec
+        for name, up, down in (("a", 0.03, 0.02), ("b", 0.05, 0.03), ("c", 0.10, 0.05)):
+            bars = [self._bar(t0, high=entry * (1 + up + 0.001), low=entry * 0.995)]
+            self.assertEqual(first_touch_barrier(bars, entry, up, down), "up_first")
+            bars = [self._bar(t0, high=entry * 1.001, low=entry * (1 - down - 0.001))]
+            self.assertEqual(first_touch_barrier(bars, entry, up, down), "down_first")
+
+    def test_first_touch_ordering_and_timeout(self):
+        from app.research.opportunity import first_touch_barrier
+
+        entry = 100.0
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        # Down first then up later
+        bars = [
+            self._bar(t0, high=100.5, low=97.5),
+            self._bar(t0 + timedelta(hours=1), high=104, low=99),
+        ]
+        self.assertEqual(first_touch_barrier(bars, entry, 0.03, 0.02), "down_first")
+        # Timeout
+        bars = [self._bar(t0, high=101, low=99) for _ in range(12)]
+        self.assertEqual(first_touch_barrier(bars, entry, 0.03, 0.02, horizon_bars=12), "neither")
+
+    def test_ambiguous_same_candle(self):
+        from app.research.opportunity import first_touch_barrier
+
+        entry = 100.0
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = [self._bar(t0, high=104, low=97)]
+        self.assertEqual(first_touch_barrier(bars, entry, 0.03, 0.02), "ambiguous")
+
+    def test_binary_subset_excludes_timeout_and_ambiguous(self):
+        from app.research.barriers import barrier_binary
+
+        ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        up = _FakeSample("A", ts, {}, up3_before_down2="up_first")
+        dn = _FakeSample("B", ts, {}, up3_before_down2="down_first")
+        to = _FakeSample("C", ts, {}, up3_before_down2="neither")
+        amb = _FakeSample("D", ts, {}, up3_before_down2="ambiguous")
+        self.assertEqual(barrier_binary(up, "up3_before_down2"), 1)
+        self.assertEqual(barrier_binary(dn, "up3_before_down2"), 0)
+        self.assertIsNone(barrier_binary(to, "up3_before_down2"))
+        self.assertIsNone(barrier_binary(amb, "up3_before_down2"))
+
+    def test_calibration_and_expected_value(self):
+        import numpy as np
+
+        from app.research.barriers import calibration_table, expected_value
+
+        y = np.array([0, 0, 1, 1, 1, 0, 1, 0, 1, 1])
+        p = np.array([0.1, 0.2, 0.6, 0.7, 0.8, 0.3, 0.9, 0.4, 0.65, 0.55])
+        table = calibration_table(y, p)
+        self.assertEqual(len(table), 5)
+        self.assertTrue(any(row["n"] > 0 for row in table))
+        self.assertAlmostEqual(expected_value(0.6, 0.03, 0.02), 0.6 * 0.03 - 0.4 * 0.02)
+        self.assertAlmostEqual(
+            expected_value(0.6, 0.03, 0.02, cost=0.002),
+            0.6 * 0.03 - 0.4 * 0.02 - 0.002,
+        )
+
+    def test_probability_output_range(self):
+        from app.research.barriers import _new_classifier, _positive_proba
+        import numpy as np
+
+        x = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]] * 10)
+        y = np.array([0, 0, 0, 1, 1, 1] * 10)
+        clf = _new_classifier()
+        clf.fit(x, y)
+        p = _positive_proba(clf, x)
+        self.assertTrue(np.all(p >= 0.0))
+        self.assertTrue(np.all(p <= 1.0))
+
+    def test_barrier_fit_never_promotes(self):
+        from app.research.barriers import fit_barrier_walk_forward
+        from app.research.experiments import BARRIER_PROBABILITY_V1
+
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        names = feature_names()
+        rows = []
+        for t in range(400):
+            ts = start + timedelta(hours=12 * t)
+            for i in range(12):
+                feats = {n: 0.0 for n in names}
+                atr = 1.5 + 0.15 * i
+                signal = (i + t) % 3
+                feats["atr_pct"] = atr
+                feats["ret_24"] = 0.01 * i
+                feats["rsi"] = 45 + 10 * signal
+                state = "up_first" if signal == 2 else ("down_first" if signal == 1 else "neither")
+                rows.append(
+                    _FakeSample(
+                        f"S{i}",
+                        ts,
+                        feats,
+                        max_upside=0.02 + 0.01 * signal,
+                        max_drawdown=-0.02,
+                        fwd_return=0.005 * signal,
+                        up3_before_down2=state,
+                        up5_before_down3="neither",
+                        up10_before_down5="neither",
+                    )
+                )
+        result = fit_barrier_walk_forward(rows, BARRIER_PROBABILITY_V1, leakage_ok=True)
+        self.assertEqual(result["experiment_id"], "barrier_probability_v1")
+        self.assertFalse(result["promote"])
+        self.assertIn(
+            result["experiment_status"],
+            {"rejected", "weak_barrier_signal", "promising_barrier_signal"},
+        )
+        self.assertIn("barriers", result["metrics"])
+        self.assertIn("up3_before_down2", result["metrics"]["barriers"])
+        self.assertIn("full_without_atr", result["metrics"]["barriers"]["up3_before_down2"])
+
+
 if __name__ == "__main__":
     unittest.main()

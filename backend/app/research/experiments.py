@@ -141,12 +141,32 @@ RISK_ADJUSTED_OPPORTUNITY_V1 = ExperimentSpec(
     ),
 )
 
+# Barrier probability: P(upside barrier before downside barrier) within 12h.
+BARRIER_PROBABILITY_V1 = ExperimentSpec(
+    experiment_id="barrier_probability_v1",
+    target_name="barrier_first_touch",
+    secondary_target="",
+    timeframe="1h",
+    horizon_hours=12,
+    move_pct=0.03,
+    primary_stride_bars=12,
+    sensitivity_stride_bars=6,
+    feature_set="full_36",
+    momentum_feature="ret_24",
+    min_cross_section_size=10,
+    notes=(
+        "Binary success/failure on +3/-2, +5/-3, +10/-5 first-touch barriers; "
+        "timeout & ambiguous excluded from binary training; calibration + top-K."
+    ),
+)
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     BIDIRECTIONAL_V1.experiment_id: BIDIRECTIONAL_V1,
     DIRECTIONAL_UP_3PCT_12H_V1.experiment_id: DIRECTIONAL_UP_3PCT_12H_V1,
     RELATIVE_UPSIDE_RANK_12H_V1.experiment_id: RELATIVE_UPSIDE_RANK_12H_V1,
     VOLATILITY_ADJUSTED_UPSIDE_V1.experiment_id: VOLATILITY_ADJUSTED_UPSIDE_V1,
     RISK_ADJUSTED_OPPORTUNITY_V1.experiment_id: RISK_ADJUSTED_OPPORTUNITY_V1,
+    BARRIER_PROBABILITY_V1.experiment_id: BARRIER_PROBABILITY_V1,
 }
 
 
